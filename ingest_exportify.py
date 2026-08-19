@@ -63,12 +63,12 @@ def extract_column_mapping(fieldnames: List[str]) -> Dict[str, str]:
 
 
 def parse_artists(raw_artist_str: str) -> Tuple[str, List[str]]:
-    """Parse comma-separated artist string into primary artist and full list."""
+    """Parse semicolon/comma-separated artist string into primary artist and full list."""
     if not raw_artist_str or not raw_artist_str.strip():
         return "Unknown Artist", ["Unknown Artist"]
 
-    # Split by comma while stripping whitespace
-    artists = [a.strip() for a in raw_artist_str.split(",") if a.strip()]
+    # Split by semicolon or comma while stripping whitespace
+    artists = [a.strip() for a in re.split(r"[;,]", raw_artist_str) if a.strip()]
     if not artists:
         return "Unknown Artist", ["Unknown Artist"]
 
