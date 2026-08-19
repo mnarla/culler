@@ -233,19 +233,19 @@ class LastFmClient:
         return result
 
 
-def fetch_unenriched_tracks(conn: sqlite3.Connection, limit: Optional[int] = None) -> List[Tuple[int, str, str, str, Optional[str], Optional[str]]]:
-    """Find tracks that either have no entry in features or have NULL Last.fm data.
+def fetch_unenriched_tracks(conn: sqlite3.Connection, limit: Optional[int] = None) -> List[Tuple[int, str, str, str, Optional[str], Optional[str], Optional[int], Optional[str], Optional[int], Optional[float]]]:
+    """Find tracks that either have no entry in features or have NULL Last.fm listeners.
 
     Returns:
-        List of (track_id, spotify_uri, title, artist, album, added_at)
+        List of (track_id, spotify_uri, title, artist, album, added_at, release_year, album_type, days_since_added, artist_cooccurrence_score)
     """
     cursor = conn.cursor()
     query = """
-        SELECT t.id, t.spotify_uri, t.title, t.artist, t.album, t.added_at
+        SELECT t.id, t.spotify_uri, t.title, t.artist, t.album, t.added_at,
+               f.release_year, f.album_type, f.days_since_added, f.artist_cooccurrence_score
         FROM tracks t
         LEFT JOIN features f ON t.id = f.track_id
-        WHERE f.track_id IS NULL 
-           OR (f.lastfm_listeners IS NULL AND f.lastfm_track_tags IS NULL AND f.genre IS NULL)
+        WHERE f.track_id IS NULL OR f.lastfm_listeners IS NULL
         ORDER BY t.id ASC
     """
     if limit is not None and limit > 0:
@@ -304,7 +304,7 @@ def main() -> None:
 
     cursor = conn.cursor()
 
-    for idx, (track_id, uri, title, artist, album, added_at) in enumerate(tracks_to_process, 1):
+    for idx, (track_id, uri, title, artist, album, added_at, existing_rel_year, existing_album_type, existing_days_since, existing_cooccur) in enumerate(tracks_to_process, 1):
         print(f"  [{idx}/{len(tracks_to_process)}] Processing: {artist} - {title} ...", end="", flush=True)
 
         try:
@@ -318,16 +318,10 @@ def main() -> None:
             track_tags = client.get_track_top_tags(artist, title)
 
             # 4. Computed features
-            days_since_added = calculate_days_since_added(added_at)
-            
-            # TODO: Infer album_type (album/single/compilation) from album metadata heuristics
-            album_type = None
-
-            # Attempt release year extraction if album/track string has year annotation
-            release_year = parse_release_year(album)
-
-            # Artist cooccurrence score default (to be computed across playlists)
-            artist_cooccurrence_score = None
+            days_since_added = existing_days_since if existing_days_since is not None else calculate_days_since_added(added_at)
+            album_type = existing_album_type or None
+            release_year = existing_rel_year if existing_rel_year is not None else parse_release_year(album)
+            artist_cooccurrence_score = existing_cooccur
 
             has_lastfm_data = bool(genre or playcount or listeners or track_tags)
             if has_lastfm_data:
