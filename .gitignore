@@ -1,0 +1,44 @@
+# SQLite databases
+*.db
+*.db-journal
+*.sqlite3
+
+# Secrets and environment variables
+.env
+.env.local
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Data exports and cache
+exports/
+*.csv
+.cache/
+
+# OS and IDE files
+.DS_Store
+.vscode/
+.idea/
