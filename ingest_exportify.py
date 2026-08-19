@@ -19,6 +19,8 @@ DEFAULT_DB_PATH = "skip_predictor.db"
 DEFAULT_EXPORTS_DIR = "exports"
 CACHE_DIR = Path(".cache")
 ARTIST_CACHE_FILE = CACHE_DIR / "track_artists.json"
+METADATA_CACHE_FILE = CACHE_DIR / "track_metadata.json"
+
 
 
 def get_connection(db_path: str | Path) -> sqlite3.Connection:
@@ -42,6 +44,8 @@ def extract_column_mapping(fieldnames: List[str]) -> Dict[str, str]:
         "album": ["albumname", "album", "albumtitle"],
         "duration": ["trackdurationms", "durationms", "duration"],
         "added_at": ["addedat", "addeddate", "dateadded", "added"],
+        "release_date": ["releasedate", "releaseyear", "year"],
+        "genres": ["genres", "genre"],
         "playlist_name": ["playlistname", "playlist"],
         "playlist_id": ["playlistid"],
     }
@@ -115,6 +119,24 @@ def save_artist_cache(cache: Dict[str, List[str]]) -> None:
         json.dump(cache, f, indent=2, ensure_ascii=False)
 
 
+def load_metadata_cache() -> Dict[str, Dict[str, Any]]:
+    """Load existing track metadata cache from disk."""
+    if METADATA_CACHE_FILE.exists():
+        try:
+            with open(METADATA_CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_metadata_cache(cache: Dict[str, Dict[str, Any]]) -> None:
+    """Save track metadata cache to disk."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(METADATA_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2, ensure_ascii=False)
+
+
 def infer_playlist_name(csv_path: Path, csv_row_playlist: Optional[str] = None) -> str:
     """Infer playlist name from row metadata or file name."""
     if csv_row_playlist and csv_row_playlist.strip():
@@ -130,6 +152,7 @@ def ingest_csv_file(
     conn: sqlite3.Connection,
     playlist_name_override: Optional[str] = None,
     artist_cache: Optional[Dict[str, List[str]]] = None,
+    metadata_cache: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Tuple[int, int]:
     """Ingest a single Exportify CSV file into the database.
 
@@ -207,6 +230,20 @@ def ingest_csv_file(
             )
             artist_cache[spotify_uri] = all_artists
 
+            raw_release = row.get(col_map.get("release_date", ""), "").strip()
+            raw_genres = row.get(col_map.get("genres", ""), "").strip()
+            rel_year = None
+            if raw_release:
+                m = re.search(r"\b(19\d{2}|20\d{2})\b", raw_release)
+                if m:
+                    rel_year = int(m.group(1))
+
+            if metadata_cache is not None:
+                metadata_cache[spotify_uri] = {
+                    "release_year": rel_year,
+                    "genres": raw_genres or None,
+                }
+
         if rows_to_insert:
             cursor = conn.cursor()
             initial_rows = conn.total_changes
@@ -267,6 +304,7 @@ def main() -> None:
 
     conn = get_connection(args.db)
     artist_cache = load_artist_cache()
+    metadata_cache = load_metadata_cache()
 
     total_inserted = 0
     total_skipped = 0
@@ -280,12 +318,14 @@ def main() -> None:
             conn,
             playlist_name_override=args.playlist_name,
             artist_cache=artist_cache,
+            metadata_cache=metadata_cache,
         )
         total_inserted += inserted
         total_skipped += skipped
         print(f"     Inserted: {inserted} | Skipped/Malformed: {skipped}")
 
     save_artist_cache(artist_cache)
+    save_metadata_cache(metadata_cache)
 
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM tracks;")
@@ -297,6 +337,7 @@ def main() -> None:
     print(f"  • Rows skipped (malformed) : {total_skipped}")
     print(f"  • Total tracks in table    : {total_in_table}")
     print(f"  • Cached artist relations  : {len(artist_cache)} tracks in {ARTIST_CACHE_FILE}")
+    print(f"  • Cached track metadata    : {len(metadata_cache)} tracks in {METADATA_CACHE_FILE}")
     print("-------------------------\n")
 
 

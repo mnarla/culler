@@ -23,6 +23,28 @@ from typing import Any, Dict, List, Optional, Tuple
 DEFAULT_DB_PATH = "skip_predictor.db"
 LASTFM_BASE_URL = "http://ws.audioscrobbler.com/2.0/"
 REQUEST_DELAY_SEC = 0.25  # ~4 requests/second, well under Last.fm's 5 req/sec limit
+CACHE_DIR = Path(".cache")
+LASTFM_ARTISTS_CACHE = CACHE_DIR / "lastfm_artists.json"
+LASTFM_TRACKS_CACHE = CACHE_DIR / "lastfm_tracks.json"
+
+
+def load_json_cache(cache_file: Path) -> Dict[str, Any]:
+    """Safely load JSON cache file from disk."""
+    if cache_file.exists():
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_json_cache(cache_file: Path, data: Dict[str, Any]) -> None:
+    """Safely save JSON cache file to disk."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
 
 
 def load_env_file(env_path: Path = Path(".env")) -> None:
@@ -87,11 +109,17 @@ def parse_release_year(raw_val: Optional[str]) -> Optional[int]:
 
 
 class LastFmClient:
-    """Client for querying the Last.fm read-only API."""
+    """Client for querying the Last.fm read-only API with persistent disk caching."""
 
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.artist_tag_cache: Dict[str, Optional[str]] = {}
+        self.artist_tag_cache: Dict[str, Optional[str]] = load_json_cache(LASTFM_ARTISTS_CACHE)
+        self.track_cache: Dict[str, Dict[str, Any]] = load_json_cache(LASTFM_TRACKS_CACHE)
+
+    def save_caches(self) -> None:
+        """Persist in-memory caches to disk."""
+        save_json_cache(LASTFM_ARTISTS_CACHE, self.artist_tag_cache)
+        save_json_cache(LASTFM_TRACKS_CACHE, self.track_cache)
 
     def _make_request(self, params: Dict[str, str], retry_on_fail: bool = True) -> Optional[Dict[str, Any]]:
         """Make an HTTP GET request to Last.fm API with rate limiting and retry."""
@@ -118,9 +146,9 @@ class LastFmClient:
         return None
 
     def get_artist_top_tags(self, artist: str) -> Optional[str]:
-        """Fetch top 1-3 tags for an artist as comma-separated string, using in-memory cache."""
+        """Fetch top 1-3 tags for an artist as comma-separated string, using disk/memory cache."""
         artist_key = artist.strip().lower()
-        if artist_key in self.artist_tag_cache:
+        if artist_key in self.artist_tag_cache and self.artist_tag_cache[artist_key] is not None:
             return self.artist_tag_cache[artist_key]
 
         data = self._make_request({"method": "artist.getTopTags", "artist": artist})
@@ -140,12 +168,21 @@ class LastFmClient:
 
     def get_track_info(self, artist: str, track: str) -> Tuple[Optional[int], Optional[int]]:
         """Fetch playcount and listeners count for a track."""
+        track_key = f"{artist.strip().lower()}::{track.strip().lower()}"
+        if track_key in self.track_cache:
+            cache_info = self.track_cache[track_key]
+            if cache_info.get("listeners") is not None or cache_info.get("playcount") is not None:
+                return cache_info.get("playcount"), cache_info.get("listeners")
+
         cleaned_title = clean_track_title(track)
         data = self._make_request({"method": "track.getInfo", "artist": artist, "track": cleaned_title})
 
         if not data and cleaned_title != track:
             # Fallback to original uncleaned title
             data = self._make_request({"method": "track.getInfo", "artist": artist, "track": track})
+
+        playcount = None
+        listeners = None
 
         if data and "track" in data:
             t = data["track"]
@@ -159,12 +196,20 @@ class LastFmClient:
             except (ValueError, TypeError):
                 listeners = None
 
-            return playcount, listeners
+        # Store in track cache
+        if track_key not in self.track_cache:
+            self.track_cache[track_key] = {}
+        self.track_cache[track_key]["playcount"] = playcount
+        self.track_cache[track_key]["listeners"] = listeners
 
-        return None, None
+        return playcount, listeners
 
     def get_track_top_tags(self, artist: str, track: str) -> Optional[str]:
         """Fetch top track-level tags (comma-separated) for a track."""
+        track_key = f"{artist.strip().lower()}::{track.strip().lower()}"
+        if track_key in self.track_cache and "tags" in self.track_cache[track_key]:
+            return self.track_cache[track_key]["tags"]
+
         cleaned_title = clean_track_title(track)
         data = self._make_request({"method": "track.getTopTags", "artist": artist, "track": cleaned_title})
 
@@ -181,11 +226,15 @@ class LastFmClient:
                 if name:
                     tags.append(name)
 
-        return ", ".join(tags) if tags else None
+        result = ", ".join(tags) if tags else None
+        if track_key not in self.track_cache:
+            self.track_cache[track_key] = {}
+        self.track_cache[track_key]["tags"] = result
+        return result
 
 
 def fetch_unenriched_tracks(conn: sqlite3.Connection, limit: Optional[int] = None) -> List[Tuple[int, str, str, str, Optional[str], Optional[str]]]:
-    """Find tracks that do not yet have an entry in the features table.
+    """Find tracks that either have no entry in features or have NULL Last.fm data.
 
     Returns:
         List of (track_id, spotify_uri, title, artist, album, added_at)
@@ -195,7 +244,8 @@ def fetch_unenriched_tracks(conn: sqlite3.Connection, limit: Optional[int] = Non
         SELECT t.id, t.spotify_uri, t.title, t.artist, t.album, t.added_at
         FROM tracks t
         LEFT JOIN features f ON t.id = f.track_id
-        WHERE f.track_id IS NULL
+        WHERE f.track_id IS NULL 
+           OR (f.lastfm_listeners IS NULL AND f.lastfm_track_tags IS NULL AND f.genre IS NULL)
         ORDER BY t.id ASC
     """
     if limit is not None and limit > 0:
@@ -314,6 +364,7 @@ def main() -> None:
             error_count += 1
             print(f" [ERROR: {e}]")
 
+    client.save_caches()
     cursor.execute("SELECT COUNT(*) FROM features;")
     total_features = cursor.fetchone()[0]
     conn.close()
