@@ -32,7 +32,7 @@ try:
     _TEMPERATURE: float = _cfg.TEMPERATURE
 except ImportError:
     # Fallback defaults if config.py is missing (should not happen in practice)
-    _MODEL_PATH = Path("models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf")
+    _MODEL_PATH = Path("models/phi-4-mini-instruct-Q4_K_M.gguf")
     _N_THREADS = 8
     _N_CTX = 4096
     _DEFAULT_MAX_TOKENS = 200

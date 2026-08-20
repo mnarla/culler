@@ -17,7 +17,7 @@ from pathlib import Path
 #   models/Qwen3-8B-Q4_K_M.gguf                     (8B)
 #   models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf     (7B)
 
-ACTIVE_MODEL_PATH: Path = Path("models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf")
+ACTIVE_MODEL_PATH: Path = Path("models/phi-4-mini-instruct-Q4_K_M.gguf")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Inference settings
