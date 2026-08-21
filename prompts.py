@@ -3,7 +3,15 @@
 Constructs the full inference prompt for a single track, incorporating:
   - Formatted track features (identical layout to benchmark.py)
   - Active rules from the database, ranked by correctness rate
-  - /no_think prefix (required for Qwen3 models)
+  - Structured 3-step reasoning constraints (no /no_think prefix)
+
+Note on /no_think:
+    The /no_think prefix was intentionally removed after direct comparison
+    testing showed it causes ungrounded, hallucinated reasoning: constant
+    confidence scores regardless of track, and factually incorrect feature
+    claims (e.g. asserting high playcount when the value was 0). Allowing
+    the model's full thinking trace produces grounded reasoning that
+    correctly references the actual feature values in the prompt.
 
 JSON Output Contract:
     The model is instructed to respond with ONLY this JSON structure.
@@ -111,7 +119,8 @@ def build_prediction_prompt(track: Dict[str, Any], conn: sqlite3.Connection) -> 
 
     Returns:
         Full prompt string ready to pass to llm_provider.predict_chat() as
-        the user message content. Always prefixed with /no_think.
+        the user message content. No /no_think prefix — thinking mode is
+        intentionally left active to produce grounded, feature-accurate reasoning.
 
     Note:
         If no active rules exist, the "Guidelines" section is omitted entirely.
@@ -148,6 +157,23 @@ def build_prediction_prompt(track: Dict[str, Any], conn: sqlite3.Connection) -> 
             lines.append(f"  {i}. {rule_text.strip()}")
         lines.append("")
 
+    # ── Reasoning constraints ─────────────────────────────────────────────────
+    lines.append("Reasoning process — follow these steps in order, do not revisit earlier steps:")
+    lines.append("  1. Name the single strongest signal that argues for Keep.")
+    lines.append("  2. Name the single strongest signal that argues for Skip.")
+    lines.append("  3. In one sentence, state which signal wins and why.")
+    lines.append("")
+    lines.append(
+        "Signal priority: treat Your Play Count and Days Since Added as the primary signals. "
+        "Use Artist Co-occurrence Score and Genre only as tiebreakers if the first two conflict."
+    )
+    lines.append("")
+    lines.append(
+        "Do not use hedging language (\"wait\", \"alternatively\", \"hmm\", \"on the other hand\"). "
+        "State each point once and move on."
+    )
+    lines.append("")
+
     # ── Output instruction ────────────────────────────────────────────────────
     lines.append(
         "Respond with ONLY a JSON object — no explanation, no preamble, no markdown fences. "
@@ -164,8 +190,10 @@ def build_prediction_prompt(track: Dict[str, Any], conn: sqlite3.Connection) -> 
 
     prompt_body = "\n".join(lines)
 
-    # /no_think is required for Qwen3 models and harmless for others
-    return f"/no_think\n{prompt_body}"
+    # /no_think is intentionally absent: prepending it was found to produce
+    # ungrounded reasoning — constant confidence scores, incorrect feature claims.
+    # Allowing the full thinking trace yields feature-accurate verdicts.
+    return prompt_body
 
 
 # ── Smoke test ────────────────────────────────────────────────────────────────
