@@ -65,6 +65,18 @@ RULES_NEW_COLUMNS: List[Tuple[str, str]] = [
         "retirement_reason",
         "TEXT",
     ),
+    (
+        "verdict_direction",
+        "TEXT",
+    ),
+    (
+        "trigger_feature",
+        "TEXT",
+    ),
+    (
+        "trigger_bucket",
+        "TEXT",
+    ),
 ]
 
 RUNS_NEW_COLUMNS: List[Tuple[str, str]] = [

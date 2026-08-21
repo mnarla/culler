@@ -225,7 +225,10 @@ def _build_synthesis_prompt(cluster: Dict[str, Any]) -> str:
         "  - Reference the specific feature(s) that matter, not just the pattern label\n"
         "  - Be general enough to apply to future tracks, not overfit to this exact batch\n\n"
         "Respond with ONLY this JSON object, no preamble, no markdown fences:\n"
-        "{\"rule_text\": \"...\", \"confidence\": \"high|medium|low\", \"rationale\": \"...\"}"
+        "{\"rule_text\": \"...\", \"confidence\": \"high|medium|low\", "
+        "\"verdict_direction\": \"favor_skip|favor_keep\", \"rationale\": \"...\"}\n\n"
+        "verdict_direction must be \"favor_skip\" if the rule advises skipping tracks, "
+        "or \"favor_keep\" if it advises keeping them."
     )
 
 
@@ -239,7 +242,9 @@ def _build_merge_prompt(rule_a: str, rule_b: str) -> str:
         "Write a single merged rule that captures the core intent of both without "
         "being redundant, overly specific, or losing important nuance.\n\n"
         "Respond with ONLY this JSON object, no preamble, no markdown fences:\n"
-        "{\"rule_text\": \"...\", \"rationale\": \"...\"}"
+        "{\"rule_text\": \"...\", \"verdict_direction\": \"favor_skip|favor_keep\", \"rationale\": \"...\"}\n\n"
+        "verdict_direction must be \"favor_skip\" if the merged rule advises skipping tracks, "
+        "or \"favor_keep\" if it advises keeping them."
     )
 
 
@@ -291,11 +296,30 @@ def _word_overlap(text_a: str, text_b: str) -> float:
 
 
 def _fetch_active_rules_full(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
-    """Fetch all active rules as list of dicts with performance stats."""
+    """Fetch all active rules as list of dicts with performance stats.
+
+    Also fetches verdict_direction and trigger_feature/trigger_bucket if present,
+    to support the contradiction check in Step 3b.
+    """
     cursor = conn.cursor()
+    # Detect whether verdict_direction and trigger columns exist (added by startup migration)
+    cursor.execute("PRAGMA table_info(rules);")
+    col_names = {row[1] for row in cursor.fetchall()}
+    has_direction = "verdict_direction" in col_names
+    has_trigger_feature = "trigger_feature" in col_names
+    has_trigger_bucket = "trigger_bucket" in col_names
+
+    extras = ""
+    if has_direction:
+        extras += ", verdict_direction"
+    if has_trigger_feature:
+        extras += ", trigger_feature"
+    if has_trigger_bucket:
+        extras += ", trigger_bucket"
+
     cursor.execute(
-        """
-        SELECT id, rule_text, times_applied, times_correct
+        f"""
+        SELECT id, rule_text, times_applied, times_correct{extras}
         FROM rules
         WHERE active = 1
         ORDER BY
@@ -303,15 +327,45 @@ def _fetch_active_rules_full(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
             times_applied ASC
         """
     )
-    return [
-        {
-            "id": row[0],
-            "rule_text": row[1],
-            "times_applied": row[2] or 0,
-            "times_correct": row[3] or 0,
-        }
-        for row in cursor.fetchall()
-    ]
+    base_keys = ["id", "rule_text", "times_applied", "times_correct"]
+    extra_keys = []
+    if has_direction:
+        extra_keys.append("verdict_direction")
+    if has_trigger_feature:
+        extra_keys.append("trigger_feature")
+    if has_trigger_bucket:
+        extra_keys.append("trigger_bucket")
+    all_keys = base_keys + extra_keys
+
+    results = []
+    for row in cursor.fetchall():
+        d = dict(zip(all_keys, row))
+        d["times_applied"] = d["times_applied"] or 0
+        d["times_correct"] = d["times_correct"] or 0
+        results.append(d)
+    return results
+
+
+# ── Contradiction detection helpers ───────────────────────────────────────────
+
+def _patterns_overlap(cand_feature: str, cand_bucket: str,
+                      exist_feature: Optional[str], exist_bucket: Optional[str]) -> bool:
+    """Return True if the candidate cluster's trigger pattern overlaps an existing rule's.
+
+    Overlap means same feature AND same bucket (exact match for categorical;
+    same quartile label for numeric). If the existing rule has no stored trigger
+    (pre-migration rule), we cannot determine overlap — return False conservatively.
+    """
+    if not exist_feature or not exist_bucket:
+        return False
+    return exist_feature == cand_feature and exist_bucket == cand_bucket
+
+
+def _opposite_directions(dir_a: Optional[str], dir_b: Optional[str]) -> bool:
+    """Return True if the two verdict_direction values are opposites."""
+    if not dir_a or not dir_b:
+        return False
+    return dir_a != dir_b and {dir_a, dir_b} == {"favor_skip", "favor_keep"}
 
 
 def _prune_underperformers(
@@ -419,6 +473,21 @@ def _compute_accuracy(batch_results: List[Dict[str, Any]]) -> Tuple[float, float
     return round(accuracy, 4), round(skip_recall, 4)
 
 
+def _ensure_rules_columns(conn: sqlite3.Connection) -> None:
+    """Ensure verdict_direction, trigger_feature, and trigger_bucket columns exist in rules table."""
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(rules);")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    for col_name, col_type in [
+        ("verdict_direction", "TEXT"),
+        ("trigger_feature", "TEXT"),
+        ("trigger_bucket", "TEXT"),
+    ]:
+        if col_name not in existing_cols:
+            cursor.execute(f"ALTER TABLE rules ADD COLUMN {col_name} {col_type};")
+    conn.commit()
+
+
 # ── Main public function ──────────────────────────────────────────────────────
 
 def consolidate_rules(
@@ -440,6 +509,9 @@ def consolidate_rules(
     Returns:
         Summary dict matching the runs.summary JSON contract.
     """
+    # Ensure rules table has verdict_direction and trigger columns
+    _ensure_rules_columns(conn)
+
     print("\n" + "=" * 70)
     print(f"consolidate_rules: processing batch of {len(batch_results)} results")
     print("=" * 70)
@@ -487,7 +559,9 @@ def consolidate_rules(
     print(f"\n[Step 2] Synthesizing candidate rules from {len(clusters)} cluster(s) (LLM, thinking mode).")
     print(f"         max_tokens={THINKING_MAX_TOKENS}  temperature=0.3  (no /no_think — thinking enabled)")
 
-    candidate_rules: List[str] = []  # rule_text strings
+    # candidate_rules: list of dicts carrying rule_text, verdict_direction, and
+    # the triggering cluster's feature+bucket for contradiction detection in Step 3b.
+    candidate_rules: List[Dict[str, Any]] = []
     for i, cluster in enumerate(clusters, 1):
         print(f"  [{i}/{len(clusters)}] Cluster: {cluster['pattern_description']} ...")
         print(f"         (LLM thinking — this may take several minutes on this hardware)")
@@ -498,9 +572,17 @@ def consolidate_rules(
         parsed = _parse_llm_json(raw, required_key="rule_text")
         if parsed:
             rule_text = parsed["rule_text"].strip()
+            direction = parsed.get("verdict_direction", "").strip().lower()
+            if direction not in ("favor_skip", "favor_keep"):
+                direction = "unknown"
             print(f"         → Rule text: \"{rule_text}\" ({elapsed:.1f}s)")
-            print(f"           Confidence: {parsed.get('confidence', '?')}  |  Rationale: {parsed.get('rationale', '')[:80]}")
-            candidate_rules.append(rule_text)
+            print(f"           Direction: {direction}  |  Confidence: {parsed.get('confidence', '?')}  |  Rationale: {parsed.get('rationale', '')[:80]}")
+            candidate_rules.append({
+                "rule_text": rule_text,
+                "verdict_direction": direction,
+                "trigger_feature": cluster["feature"],
+                "trigger_bucket": cluster["bucket"],
+            })
         else:
             print(f"         → Could not parse LLM output ({elapsed:.1f}s). Raw (first 300 chars):\n{raw[:300]!r}")
 
@@ -510,12 +592,88 @@ def consolidate_rules(
     if pruned == 0:
         print("  No rules meet the pruning criteria.")
 
-    # ── Step 3b: Merge near-duplicates / insert new rules ────────────────────
-    print(f"\n[Step 3b] Checking {len(candidate_rules)} candidate rule(s) against {rules_before_count} existing for near-duplicates...")
+    # ── Step 3b: Contradiction check + near-duplicate merge + insert ─────────
+    # Contradiction check runs BEFORE word-overlap merge — two rules on the same
+    # feature+bucket with opposite verdict_directions must not coexist.
+    #
+    # Newest-evidence-wins assumption: the candidate (fresh batch evidence) always
+    # supersedes the existing conflicting rule, regardless of the existing rule's
+    # track record, because the existing rule has no performance baseline to compare
+    # against the candidate which has none at all. Revisit if rules start flip-
+    # flopping every round (symptom: same trigger alternates direction repeatedly).
+    print(f"\n[Step 3b] Checking {len(candidate_rules)} candidate rule(s) against existing rules "
+          f"for contradictions and near-duplicates...")
     active_rules = _fetch_active_rules_full(conn)
 
-    final_new_rules: List[str] = []
-    for candidate_text in candidate_rules:
+    final_new_rules: List[Dict[str, Any]] = []
+    for candidate in candidate_rules:
+        candidate_text = candidate["rule_text"]
+        cand_direction = candidate["verdict_direction"]
+        cand_feature   = candidate["trigger_feature"]
+        cand_bucket    = candidate["trigger_bucket"]
+
+        # ── Sub-check A: Contradiction (same pattern, opposite direction) ─────
+        contradicted_rule = None
+        for existing in active_rules:
+            if _patterns_overlap(cand_feature, cand_bucket,
+                                 existing.get("trigger_feature"),
+                                 existing.get("trigger_bucket")) and \
+               _opposite_directions(cand_direction, existing.get("verdict_direction")):
+                contradicted_rule = existing
+                break  # retire only the first match; further rounds will catch any others
+
+        if contradicted_rule:
+            # Insert new rule first to get its ID
+            cursor.execute(
+                """
+                INSERT INTO rules (rule_text, active, times_applied, times_correct,
+                                   created_by_run_id, verdict_direction,
+                                   trigger_feature, trigger_bucket,
+                                   created_at, updated_at)
+                VALUES (?, 1, 0, 0, ?, ?, ?, ?, datetime('now'), datetime('now'));
+                """,
+                (candidate_text, run_id, cand_direction or None,
+                 cand_feature or None, cand_bucket or None),
+            )
+            new_rule_id = cursor.lastrowid
+
+            # Retire contradicted rule — newest evidence wins
+            contradiction_reason = (
+                f"Contradicted by newer rule #{new_rule_id} from run #{run_id}: "
+                f"opposite verdict on same trigger pattern "
+                f"({cand_feature}={cand_bucket})"
+            )
+            cursor.execute(
+                "UPDATE rules SET active = 0, superseded_by = ?, retirement_reason = ? WHERE id = ?;",
+                (new_rule_id, contradiction_reason, contradicted_rule["id"]),
+            )
+            print(
+                f"  [CONTRADICTION] New rule #{new_rule_id} conflicts with active rule "
+                f"#{contradicted_rule['id']} (same trigger: {cand_feature}={cand_bucket}, "
+                f"opposite verdicts: {cand_direction} vs {contradicted_rule.get('verdict_direction', '?')}). "
+                f"Retiring rule #{contradicted_rule['id']}, keeping rule #{new_rule_id}."
+            )
+            rule_changes.append({
+                "rule_id": contradicted_rule["id"],
+                "action": "contradicted",
+                "by_rule_id": new_rule_id,
+                "reason": contradiction_reason,
+            })
+            rule_changes.append({
+                "rule_id": new_rule_id,
+                "action": "created",
+                "reason": f"Replaced contradicting rule #{contradicted_rule['id']} on trigger {cand_feature}={cand_bucket}",
+            })
+            active_rules = [r for r in active_rules if r["id"] != contradicted_rule["id"]]
+            active_rules.append({
+                "id": new_rule_id, "rule_text": candidate_text,
+                "times_applied": 0, "times_correct": 0,
+                "verdict_direction": cand_direction,
+                "trigger_feature": cand_feature, "trigger_bucket": cand_bucket,
+            })
+            continue  # skip word-overlap merge check for this candidate
+
+        # ── Sub-check B: Word-overlap merge (same direction, similar wording) ─
         overlapping_rule = None
         best_overlap = 0.0
         for existing in active_rules:
@@ -536,16 +694,22 @@ def consolidate_rules(
             parsed = _parse_llm_json(raw, required_key="rule_text")
             if parsed:
                 merged_text = parsed["rule_text"].strip()
-                print(f"    → Merged rule: \"{merged_text}\" ({elapsed:.1f}s)")
+                merged_direction = parsed.get("verdict_direction", "").strip().lower()
+                if merged_direction not in ("favor_skip", "favor_keep"):
+                    merged_direction = cand_direction  # inherit candidate's direction on parse gap
+                print(f"    → Merged rule: \"{merged_text}\" direction={merged_direction} ({elapsed:.1f}s)")
 
                 # Insert merged rule
                 cursor.execute(
                     """
                     INSERT INTO rules (rule_text, active, times_applied, times_correct,
-                                       created_by_run_id, created_at, updated_at)
-                    VALUES (?, 1, 0, 0, ?, datetime('now'), datetime('now'));
+                                       created_by_run_id, verdict_direction,
+                                       trigger_feature, trigger_bucket,
+                                       created_at, updated_at)
+                    VALUES (?, 1, 0, 0, ?, ?, ?, ?, datetime('now'), datetime('now'));
                     """,
-                    (merged_text, run_id),
+                    (merged_text, run_id, merged_direction or None,
+                     cand_feature or None, cand_bucket or None),
                 )
                 new_rule_id = cursor.lastrowid
 
@@ -568,32 +732,42 @@ def consolidate_rules(
                 })
                 # Update local active_rules list
                 active_rules = [r for r in active_rules if r["id"] != overlapping_rule["id"]]
-                active_rules.append({"id": new_rule_id, "rule_text": merged_text, "times_applied": 0, "times_correct": 0})
+                active_rules.append({
+                    "id": new_rule_id, "rule_text": merged_text,
+                    "times_applied": 0, "times_correct": 0,
+                    "verdict_direction": merged_direction,
+                    "trigger_feature": cand_feature, "trigger_bucket": cand_bucket,
+                })
             else:
                 print(f"    → Merge LLM parse failed ({elapsed:.1f}s). Inserting candidate as-is.")
-                final_new_rules.append(candidate_text)
+                final_new_rules.append(candidate)
         else:
-            final_new_rules.append(candidate_text)
+            final_new_rules.append(candidate)
 
     # ── Step 3c: Cap enforcement + insert remaining candidates ────────────────
     if final_new_rules:
         _enforce_cap(conn, slots_needed=len(final_new_rules), rule_changes=rule_changes)
-        for rule_text in final_new_rules:
+        for cand in final_new_rules:
             cursor.execute(
                 """
                 INSERT INTO rules (rule_text, active, times_applied, times_correct,
-                                   created_by_run_id, created_at, updated_at)
-                VALUES (?, 1, 0, 0, ?, datetime('now'), datetime('now'));
+                                   created_by_run_id, verdict_direction,
+                                   trigger_feature, trigger_bucket,
+                                   created_at, updated_at)
+                VALUES (?, 1, 0, 0, ?, ?, ?, ?, datetime('now'), datetime('now'));
                 """,
-                (rule_text, run_id),
+                (cand["rule_text"], run_id,
+                 cand.get("verdict_direction") or None,
+                 cand.get("trigger_feature") or None,
+                 cand.get("trigger_bucket") or None),
             )
             new_id = cursor.lastrowid
             rule_changes.append({
                 "rule_id": new_id,
                 "action": "created",
-                "reason": f"Synthesized from miss cluster",
+                "reason": "Synthesized from miss cluster",
             })
-            print(f"  [CREATE] Rule #{new_id}: \"{rule_text}\"")
+            print(f"  [CREATE] Rule #{new_id}: \"{cand['rule_text']}\" (direction={cand.get('verdict_direction', '?')})")
 
     conn.commit()
 
