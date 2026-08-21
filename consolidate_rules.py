@@ -605,6 +605,10 @@ def consolidate_rules(
     print(f"  Run ID           : {run_id}")
     print("=" * 70 + "\n")
 
+    # Include run_id in return so calibrate.py can mark labels as used
+    summary["run_id"] = run_id
+    summary["rules_before"] = rules_before_count
+    summary["rules_after"] = rules_after_count
     return summary
 
 
