@@ -63,6 +63,11 @@ PRUNE_MIN_APPLIED = 10           # Must have this many applications to be pruned
 PRUNE_MAX_ACCURACY = 0.4         # Prune if correct rate below this threshold
 RULE_SIMILARITY_WORD_OVERLAP = 0.5  # Cosine-like word overlap to flag near-duplicates
 
+# Tokens budget for thinking-mode LLM calls (rule synthesis + merge).
+# Qwen3 8B needs space for the full <think>...</think> trace before the JSON
+# output. 1024 was causing truncation at ~358s; 8192 gives substantial headroom.
+THINKING_MAX_TOKENS = 8192
+
 NUMERIC_FEATURES = [
     "days_since_added",
     "artist_cooccurrence_score",
@@ -259,10 +264,12 @@ def _parse_llm_json(raw_text: str, required_key: str) -> Optional[Dict[str, Any]
         return None
 
 
-def _llm_think(prompt: str, max_tokens: int = 1024) -> str:
+def _llm_think(prompt: str, max_tokens: int = THINKING_MAX_TOKENS) -> str:
     """Call the model WITHOUT /no_think so thinking mode is active.
 
     This is intentionally slow — used only for rule synthesis and merge decisions.
+    max_tokens defaults to THINKING_MAX_TOKENS (8192) to give Qwen3's full
+    <think>...</think> trace enough room before the JSON output.
     """
     from llm_provider import predict_chat
     messages = [{"role": "user", "content": prompt}]
@@ -477,7 +484,8 @@ def consolidate_rules(
         print(f"    • Pattern: {c['pattern_description']}  ({len(c['misses'])} misses)")
 
     # ── Step 2: LLM rule synthesis ────────────────────────────────────────────
-    print(f"\n[Step 2] Synthesizing candidate rules from {len(clusters)} cluster(s) (LLM, thinking mode)...")
+    print(f"\n[Step 2] Synthesizing candidate rules from {len(clusters)} cluster(s) (LLM, thinking mode).")
+    print(f"         max_tokens={THINKING_MAX_TOKENS}  temperature=0.3  (no /no_think — thinking enabled)")
 
     candidate_rules: List[str] = []  # rule_text strings
     for i, cluster in enumerate(clusters, 1):
@@ -485,7 +493,7 @@ def consolidate_rules(
         print(f"         (LLM thinking — this may take several minutes on this hardware)")
         synthesis_prompt = _build_synthesis_prompt(cluster)
         t0 = time.perf_counter()
-        raw = _llm_think(synthesis_prompt)
+        raw = _llm_think(synthesis_prompt, max_tokens=THINKING_MAX_TOKENS)
         elapsed = time.perf_counter() - t0
         parsed = _parse_llm_json(raw, required_key="rule_text")
         if parsed:
@@ -494,7 +502,7 @@ def consolidate_rules(
             print(f"           Confidence: {parsed.get('confidence', '?')}  |  Rationale: {parsed.get('rationale', '')[:80]}")
             candidate_rules.append(rule_text)
         else:
-            print(f"         → Could not parse LLM output ({elapsed:.1f}s). Raw: {raw[:120]!r}")
+            print(f"         → Could not parse LLM output ({elapsed:.1f}s). Raw (first 300 chars):\n{raw[:300]!r}")
 
     # ── Step 3a: Prune underperformers ────────────────────────────────────────
     print(f"\n[Step 3a] Pruning underperforming rules (min {PRUNE_MIN_APPLIED} applications, < {int(PRUNE_MAX_ACCURACY*100)}% accuracy)...")
@@ -520,10 +528,10 @@ def consolidate_rules(
             print(f"  [MERGE] Candidate overlaps rule #{overlapping_rule['id']} (similarity={best_overlap:.2f})")
             print(f"    Existing : \"{overlapping_rule['rule_text']}\"")
             print(f"    Candidate: \"{candidate_text}\"")
-            print(f"    Calling LLM to merge (thinking mode)...")
+            print(f"    Calling LLM to merge (thinking mode, max_tokens={THINKING_MAX_TOKENS})...")
             merge_prompt = _build_merge_prompt(overlapping_rule["rule_text"], candidate_text)
             t0 = time.perf_counter()
-            raw = _llm_think(merge_prompt)
+            raw = _llm_think(merge_prompt, max_tokens=THINKING_MAX_TOKENS)
             elapsed = time.perf_counter() - t0
             parsed = _parse_llm_json(raw, required_key="rule_text")
             if parsed:

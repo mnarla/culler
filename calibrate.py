@@ -170,8 +170,15 @@ def _parse_model_response(raw_text: str) -> Optional[Dict[str, Any]]:
 def _predict_batch(
     labeled_rows: List[Dict[str, Any]],
     conn: sqlite3.Connection,
+    debug_raw: bool = False,
 ) -> Tuple[List[Dict[str, Any]], List[int]]:
     """Run LLM predictions for each labeled track.
+
+    Args:
+        labeled_rows: Track+label rows from the DB.
+        conn:         Open DB connection for prompt building.
+        debug_raw:    If True, prints the full raw model response before parsing.
+                      Use to verify confidence values and response format.
 
     Returns:
         (batch_results, skipped_label_ids)
@@ -212,6 +219,9 @@ def _predict_batch(
             print(f" ERROR calling model: {e}")
             skipped_label_ids.append(label_id)
             continue
+
+        if debug_raw:
+            print(f"\n    [RAW RESPONSE label_id={label_id}]\n{raw_text}\n    [END RAW]")
 
         parsed = _parse_model_response(raw_text)
         if parsed is None:
@@ -295,6 +305,7 @@ def run_calibration(
     db_path: Path,
     batch_size: int,
     num_rounds: int,
+    debug_raw: bool = False,
 ) -> None:
     """Execute calibration rounds."""
     if not db_path.exists():
@@ -345,7 +356,7 @@ def run_calibration(
             print(f"[+] Fetched {len(labeled_rows)} labeled tracks. Starting predictions...\n")
 
             # ── 3. Predict ────────────────────────────────────────────────────
-            batch_results, skipped_label_ids = _predict_batch(labeled_rows, conn)
+            batch_results, skipped_label_ids = _predict_batch(labeled_rows, conn, debug_raw=debug_raw)
 
             if not batch_results:
                 print(
@@ -414,6 +425,12 @@ def main() -> None:
         default=1,
         help="Number of calibration rounds to run sequentially (default: 1)",
     )
+    parser.add_argument(
+        "--debug-raw",
+        action="store_true",
+        default=False,
+        help="Print full raw model response for every track before JSON parsing (for debugging confidence/format issues).",
+    )
     args = parser.parse_args()
 
     if args.batch_size < 1:
@@ -427,6 +444,7 @@ def main() -> None:
         db_path=Path(args.db),
         batch_size=args.batch_size,
         num_rounds=args.rounds,
+        debug_raw=args.debug_raw,
     )
 
 
