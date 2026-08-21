@@ -64,7 +64,11 @@ def _fetch_active_rules(conn: sqlite3.Connection) -> List[Tuple[int, str]]:
     Returns an empty list when no active rules exist.
     """
     cursor = conn.cursor()
-    cursor.execute(_ACTIVE_RULES_QUERY)
+    try:
+        cursor.execute(_ACTIVE_RULES_QUERY)
+    except sqlite3.OperationalError:
+        # Fallback if table has not been migrated yet
+        cursor.execute("SELECT id, rule_text FROM rules WHERE active = 1 ORDER BY times_applied DESC;")
     return [(row[0], row[1]) for row in cursor.fetchall()]
 
 

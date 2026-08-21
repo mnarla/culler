@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import config
 from consolidate_rules import consolidate_rules, _compute_accuracy
 from llm_provider import predict_chat
+from migrate_phase3_schema import migrate as migrate_phase3
 from prompts import build_prediction_prompt
 
 DEFAULT_DB_PATH = config.DB_PATH
@@ -300,9 +301,12 @@ def run_calibration(
         print(f"[!] Database '{db_path}' not found. Run init_db.py first.", file=sys.stderr)
         sys.exit(1)
 
+    # ── Ensure all Phase 3 columns (rules, runs) exist ───────────────────────
+    migrate_phase3(db_path)
+
     conn = _get_connection(db_path)
 
-    # ── One-time startup migration ────────────────────────────────────────────
+    # ── One-time startup migration for labels ──────────────────────────────────
     _ensure_used_in_run_id_column(conn)
 
     rounds_completed = 0
