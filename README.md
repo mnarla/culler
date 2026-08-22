@@ -45,9 +45,13 @@ Due to Spotify's API restrictions on personal apps, the ingestion pipeline runs 
 - **Dataset**: 820 tracks ingested and verified clean in SQLite (`skip_predictor.db`).
 
 ### 2. Model Selection
-Benchmarked four CPU-runnable models (Phi-4-mini, Qwen3 4B, Qwen3 8B, Mistral 7B Instruct v0.3 — all Q4_K_M quantized) on a fixed 50-track sample. 
+Benchmarked four CPU-runnable models (Phi-4-mini, Qwen3 4B, Qwen3 8B, Mistral 7B Instruct v0.3 — all Q4_K_M quantized) on a fixed 50-track sample.
 
-**Qwen3 8B** was chosen based on **Skip-recall** (47.4% vs. 21.1% / 10.5%) rather than raw accuracy. A naive "always predict Keep" baseline scored highest on accuracy alone due to class imbalance, which would have been a misleading metric for model choice.
+Choosing the model required a fundamental architectural trade-off between **inference speed and reasoning capability**:
+- **Smaller models** (Phi-4-mini 3.8B, Qwen3 4B) offered fast throughput (~5–15s/track on CPU) but struggled with subtle multi-feature interactions, often collapsing into naive majority-class predictions ("Always Keep").
+- **Qwen3 8B** was chosen because it demonstrated real reasoning depth and delivered the highest **Skip-recall** (47.4% vs. 21.1% / 10.5%). However, this required sacrificing speed, as deep thinking mode runs significantly slower on a consumer CPU.
+
+A naive "always predict Keep" baseline scored highest on raw accuracy alone due to class imbalance, making Skip-recall the true deciding metric. Ultimately, speed was traded away in favor of genuine reasoning integrity.
 
 ### 3. Self-Calibration Loop
 The core engine of the project. In each round:
