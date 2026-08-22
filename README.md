@@ -2,7 +2,9 @@
 
 A local, CPU-only agentic tool that predicts which tracks in old Spotify playlists you'd skip — and audits its own prediction errors to rewrite its own heuristic rules over time.
 
-Built as a resume/portfolio project to explore agentic system design: prompt-driven local inference, self-calibration loops, and honest empirical debugging of a small local LLM. It is not intended for daily personal use or multi-user deployment.
+Built as a learning and portfolio project to explore agentic system design, prompt-driven local inference, self-calibration loops, and empirical debugging of small open-weights LLMs under hardware constraints. It is not intended for daily personal use or multi-user deployment.
+
+> **Design Philosophy & The Local Constraint**: While querying a commercial cloud LLM API would have been far simpler and faster, running 100% locally on modest consumer hardware was an intentional constraint. The core objective was to get hands-on experience with local model mechanics — quantization trade-offs, reasoning limits, hallucination patterns in compact models, and self-correction loops — without relying on external cloud intelligence as a crutch.
 
 ---
 
