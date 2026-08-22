@@ -46,3 +46,9 @@ exports/
 # Graphify
 graphify-out/
 .graphify*
+
+# Private interview cheatsheets & notes
+*cheatsheet*
+*CHEATSHEET*
+INTERVIEW_CHEATSHEET.md
+notes/
