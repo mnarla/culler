@@ -87,7 +87,12 @@ def _fetch_active_rules(conn: sqlite3.Connection) -> List[Tuple[int, str]]:
 def _format_features(track: Dict[str, Any]) -> str:
     """Format the 6 Phase 2 features into the standard feature block string."""
     cooccur = track.get("artist_cooccurrence_score")
-    cooccur_str = f"{cooccur:.4f}" if isinstance(cooccur, (int, float)) else "Unknown"
+    if isinstance(cooccur, (int, float)):
+        pct = cooccur * 100
+        tier = "High loyalty" if pct >= 5.0 else ("Moderate" if pct >= 2.0 else "Low / one-off")
+        cooccur_str = f"{pct:.1f}% ({cooccur:.4f} - {tier})"
+    else:
+        cooccur_str = "Unknown"
 
     user_pc = track.get("user_playcount")
     user_pc_str = str(user_pc) if user_pc is not None else "Unknown"

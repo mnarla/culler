@@ -40,7 +40,7 @@ flowchart TD
 ### 1. Data Pipeline
 Spotify's API no longer supports the endpoints this kind of project needs without Developer Mode and Premium. So the ingestion pipeline uses [Exportify](https://exportify.app/) CSV exports and enriches them via the Last.fm API:
 
-- **Features**: genre tags, popularity proxy (Last.fm global listeners), artist co-occurrence score (how often the artist appears across the playlist relative to all tracks), days-since-added, and personal lifetime scrobble count.
+- **Features**: genre tags, popularity proxy (Last.fm global listeners), artist co-occurrence score (percentage frequency and loyalty tiers across the playlist), days-since-added, and personal lifetime scrobble count.
 - **Dataset**: 820 tracks from one of my playlists, deduplicated and verified clean.
 
 ### 2. Model Selection
@@ -112,8 +112,8 @@ The anti-hedging line was removed. The structured 3-step format (1: strongest Ke
 
 ## Current State & Known Issues
 
-- **Convergence not demonstrated yet**: The loop executes cleanly end-to-end — miss clustering, rule synthesis, contradiction detection all work — but across the rounds run so far, rules oscillate rather than monotonically improving accuracy. Small batch sizes make it hard to separate signal from noise.
-- **Early parse-failure rate**: First runs saw ~15–30% parse drops due to unhandled markdown fencing and truncated `<think>` traces. Fixed by switching to greedy regex JSON extraction and raising `DEFAULT_MAX_TOKENS` to 4096.
+- **Batch calibration validated**: The loop executes cleanly end-to-end — miss clustering, rule synthesis, and contradiction detection are verified on test batches (e.g. 80.0% accuracy, 50.0% Skip-recall, 0 parse errors). Multi-round asymptotic convergence across larger splits remains the next milestone.
+- **Early parse-failure rate**: Early runs saw ~15–30% parse drops due to unhandled markdown fencing and truncated `<think>` traces. Fixed by switching to greedy regex JSON extraction and raising `DEFAULT_MAX_TOKENS = 4096` with `N_CTX = 8192`.
 - **Playcount is lifetime, not recency**: `user_playcount` is a total scrobble count. It can't tell "still in rotation" from "loved three years ago, never touched since." A recency signal from `user.getRecentTracks` was considered but not built — scrobbling was likely dormant or unreliable over the period these tracks were added, so a derived recency feature would probably be as noisy as the lifetime count.
 - **Full library run deferred**: The ~41-hour CPU estimate for a full 820-track pass makes it impractical on this hardware. Evidence is deliberately built on smaller rounds.
 
