@@ -2,13 +2,13 @@
 
 A local, CPU-only experiment that flags tracks to skip in bloated Spotify playlists, then uses prediction errors to auto-tune its own heuristic rules.
 
-Built on an old Dell Latitude 5500 (Intel i7-8665U, 4c/8t, CPU-only) to benchmark local 8B reasoning, test self-correction loops, and inspect failure modes — without cloud APIs. Not intended for daily use or multi-user deployment.
+Built on an old Dell Latitude 5500 to benchmark local 8B reasoning, test self-correction loops, and inspect failure modes without cloud APIs. Not intended for daily use or multi-user deployment. However, cloud APIs would've made this simpler and easier, but I wanted to mess around with local llms.
 
 ---
 
 ## Why
 
-Old playlists accumulate years of additions you'd never actually play. Rather than re-listening to 820 tracks manually, I wanted to see if a local LLM could make a reasonable first pass — and whether a feedback loop would actually improve its predictions over time.
+Old playlists accumulate years of additions you'd never actually play. Rather than re-listening to 820 tracks manually, I wanted to see if a local LLM could make a reasonable first pass and whether a feedback loop would actually improve its predictions over time.
 
 ---
 
@@ -41,7 +41,7 @@ flowchart TD
 Spotify's API no longer supports the endpoints this kind of project needs without Developer Mode and Premium. So the ingestion pipeline uses [Exportify](https://exportify.app/) CSV exports and enriches them via the Last.fm API:
 
 - **Features**: genre tags, popularity proxy (Last.fm global listeners), artist co-occurrence score (how often the artist appears across the playlist relative to all tracks), days-since-added, and personal lifetime scrobble count.
-- **Dataset**: 820 tracks, deduplicated and verified clean.
+- **Dataset**: 820 tracks from one of my playlists, deduplicated and verified clean.
 
 ### 2. Model Selection
 
@@ -117,12 +117,6 @@ The anti-hedging line was removed. The structured 3-step format (1: strongest Ke
 - **Playcount is lifetime, not recency**: `user_playcount` is a total scrobble count. It can't tell "still in rotation" from "loved three years ago, never touched since." A recency signal from `user.getRecentTracks` was considered but not built — scrobbling was likely dormant or unreliable over the period these tracks were added, so a derived recency feature would probably be as noisy as the lifetime count.
 - **Full library run deferred**: The ~41-hour CPU estimate for a full 820-track pass makes it impractical on this hardware. Evidence is deliberately built on smaller rounds.
 
----
-
-## Lessons
-
-1. **All reasoning in the pipeline is local**: prediction, miss clustering, rule synthesis, contradiction resolution, and rule merging all run through Qwen3 8B on-device. The coding assistant (Gemini, via IDE) was used only for writing and debugging code — it never touched the playlist data or made any predictions.
-2. **Remote DB state and local assistant state diverge silently**: Hit this more than once. A coding assistant reported schema changes as "verified" against its own in-memory environment, not the real database on the remote machine. All migrations in this project use `PRAGMA table_info` checks and are designed to be idempotent.
 
 ---
 
