@@ -28,7 +28,7 @@ flowchart TD
         E --> F
         F --> G[Qwen3 8B Local Inference]
         G --> H[Miss Clustering]
-        H -->|≥5 Misses Pattern| I[LLM Rule Synthesis]
+        H -->|≥2 Misses Pattern| I[LLM Rule Synthesis]
         I --> J{Rule Management}
         J -->|Opposite Direction| K[Contradiction Resolution]
         J -->|Word Overlap > 0.5| L[LLM Rule Merge]
@@ -57,7 +57,7 @@ A naive "always predict Keep" baseline scored highest on raw accuracy alone due 
 The core engine of the project. In each round:
 1. **Pulls fresh labeled tracks**: Fetches unused hand-labeled ground-truth tracks (`Keep` / `Skip`).
 2. **Infers with injected rules**: Builds prompts injecting currently-active heuristic rules ranked by correctness rate.
-3. **Clusters misses**: Groups prediction errors by feature pattern (single-feature, quartile-bucketed across the 820-track distribution; requires $\ge 5$ misses to qualify).
+3. **Clusters misses**: Groups prediction errors by feature pattern (single-feature, quartile-bucketed across the 820-track distribution; requires $\ge 2$ misses or $\ge 20\%$ to qualify).
 4. **Synthesizes rules**: Prompts Qwen3 8B (in thinking mode) to generate actionable curation rules from qualifying miss clusters.
 5. **Evolves ruleset**:
    - **Contradiction Resolution**: Detects when a new candidate rule shares a trigger pattern with an existing rule but yields an opposite verdict direction (`favor_skip` vs. `favor_keep`). Resolves via newest-evidence-wins (retires older rule with `superseded_by`).
@@ -67,8 +67,8 @@ The core engine of the project. In each round:
 6. **Provenance Tracking**: SQLite schema tracks full rule lifecycle (`times_applied`, `times_correct`, `created_by_run_id`, `superseded_by`, `retirement_reason`, `verdict_direction`, `trigger_feature`, `trigger_bucket`), alongside a JSON log in `runs`.
 
 ### 4. Hardware Environment
-- **Machine**: Dell Latitude 5500 (Intel Core i7-8665U, 8 vCPUs, ~15 GB RAM, Intel UHD 620).
-- **Execution**: 100% CPU-only local inference via `llama-cpp-python`, accessed over SSH from a MacBook. Zero external GPU or cloud inference APIs.
+- **Machine**: Dell Latitude 5500 (Intel Core i7-8665U, 4 physical cores / 8 vCPUs, ~15 GB RAM, Intel UHD 620).
+- **Execution**: 100% CPU-only local inference via `llama-cpp-python` pinned to 4 physical cores (`N_THREADS = 4` to eliminate AVX2 hyperthread context-switching stalls), accessed over SSH from a MacBook. Zero external GPU or cloud inference APIs.
 
 ---
 
@@ -104,7 +104,7 @@ The anti-hedging line was reverted, while the structured 3-step reasoning format
 ## Known Limitations
 
 - **Oscillation over Convergence**: The calibration mechanism executes cleanly end-to-end (clustering $\rightarrow$ synthesis $\rightarrow$ contradiction resolution), but initial rounds exhibit rule oscillation across small batches rather than monotonic accuracy gains.
-- **Parse-Failure Rate**: Occasional JSON format drift or truncation causes a ~15–30% parse-failure rate on certain runs, handled gracefully by dropping the track from the consolidation batch while marking the label as processed.
+- **Parse-Failure Rate**: Early runs experienced ~15–30% parse drops from unhandled markdown fencing and `<think>` trace cutoffs; resolved via greedy regex parsing and raised generation token ceilings (`DEFAULT_MAX_TOKENS = 4096`).
 - **Lifetime vs. Recency Playcounts**: `user_playcount` represents lifetime scrobbles, which cannot distinguish between a dormant past favorite and an active daily track.
 - **Full Dataset Run**: Full 820-track passes were deferred due to the ~41-hour CPU runtime requirement in thinking mode.
 
