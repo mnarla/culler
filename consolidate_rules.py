@@ -55,9 +55,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import config
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-
-MISS_CLUSTER_THRESHOLD = 5       # Minimum misses in a cluster to promote it
+MISS_CLUSTER_THRESHOLD = 2       # Minimum misses in a cluster to promote it (supports small 10-15 track batches)
 MAX_ACTIVE_RULES = 12            # Hard cap on active rules
 PRUNE_MIN_APPLIED = 10           # Must have this many applications to be pruned
 PRUNE_MAX_ACCURACY = 0.4         # Prune if correct rate below this threshold
@@ -125,12 +123,13 @@ def _numeric_bucket(value: Optional[float], q1: float, q2: float, q3: float) -> 
 def _cluster_misses(
     misses: List[Dict[str, Any]],
     conn: sqlite3.Connection,
+    min_cluster_size: int = MISS_CLUSTER_THRESHOLD,
 ) -> List[Dict[str, Any]]:
-    """Group misses by shared single-feature patterns.
+    """Group misses by shared single-feature patterns or failure modes.
 
-    For each categorical and numeric feature, bucket every miss and group
-    by (feature_name, bucket_value). Only clusters with >= MISS_CLUSTER_THRESHOLD
-    misses are returned as candidates.
+    For small calibration batches (e.g. 10–15 tracks), rule synthesis triggers
+    when len(misses) >= 2. Groups misses by categorical feature values, numeric
+    quartile buckets, or failure modes (e.g. false keeps vs. false skips).
 
     Returns list of cluster dicts:
     {
@@ -140,6 +139,9 @@ def _cluster_misses(
         "misses": List[Dict],
     }
     """
+    if len(misses) < min_cluster_size:
+        return []
+
     # Pre-compute quartile boundaries from full dataset
     quartiles: Dict[str, Tuple[float, float, float]] = {}
     for feat in NUMERIC_FEATURES:
@@ -166,11 +168,11 @@ def _cluster_misses(
 
     for feat, buckets in single_feature_groups.items():
         for bucket_val, bucket_misses in buckets.items():
-            if len(bucket_misses) < MISS_CLUSTER_THRESHOLD:
+            if len(bucket_misses) < min_cluster_size:
                 continue
-            # Require at least half the cluster to be fresh (not already claimed)
+            # Require fresh misses not already claimed
             fresh = [m for m in bucket_misses if m["track_id"] not in seen_track_ids]
-            if len(fresh) < MISS_CLUSTER_THRESHOLD:
+            if len(fresh) < min_cluster_size:
                 continue
 
             # Build human-readable pattern description
@@ -195,6 +197,32 @@ def _cluster_misses(
                 "bucket": bucket_val,
                 "pattern_description": pattern_desc,
                 "misses": bucket_misses,
+            })
+
+    # If single-feature clusters yielded nothing but we have >= 2 misses, group by failure mode
+    if not candidates and len(misses) >= min_cluster_size:
+        false_keeps = [m for m in misses if m.get("predicted_verdict", "").lower() == "keep"]
+        false_skips = [m for m in misses if m.get("predicted_verdict", "").lower() == "skip"]
+
+        for mode_misses, feat, buck, desc in [
+            (false_keeps, "user_playcount", "Q1_low", "tracks mispredicted as Keep (actual Skip)"),
+            (false_skips, "artist_cooccurrence_score", "Q4_high", "tracks mispredicted as Skip (actual Keep)"),
+        ]:
+            if len(mode_misses) >= min_cluster_size:
+                candidates.append({
+                    "feature": feat,
+                    "bucket": buck,
+                    "pattern_description": desc,
+                    "misses": mode_misses,
+                })
+
+        # Fallback: if failure modes are split (e.g. 1 false keep + 1 false skip), combine them as general miss batch
+        if not candidates and len(misses) >= min_cluster_size:
+            candidates.append({
+                "feature": "batch_error",
+                "bucket": "mixed",
+                "pattern_description": f"mixed miss pattern across {len(misses)} tracks in batch",
+                "misses": misses,
             })
 
     return candidates
