@@ -1,34 +1,32 @@
 # Culler
 
-A local, CPU-only agentic tool that predicts which tracks in old Spotify playlists you'd skip — and audits its own prediction errors to rewrite its own heuristic rules over time.
+A local, CPU-only experiment that flags tracks to skip in bloated Spotify playlists, then uses prediction errors to auto-tune its own heuristic rules.
 
-Built as a learning and portfolio project to explore agentic system design, prompt-driven local inference, self-calibration loops, and empirical debugging of small open-weights LLMs under hardware constraints. It is not intended for daily personal use or multi-user deployment.
-
-> **Design Philosophy & The Local Constraint**: While querying a commercial cloud LLM API would have been far simpler and faster, running 100% locally on modest consumer hardware was an intentional constraint. The core objective was to get hands-on experience with local model mechanics — quantization trade-offs, reasoning limits, hallucination patterns in compact models, and self-correction loops — without relying on external cloud intelligence as a crutch.
+Built on an old Dell Latitude 5500 (Intel i7-8665U, 4c/8t, CPU-only) to benchmark local 8B reasoning, test self-correction loops, and inspect failure modes — without cloud APIs. Not intended for daily use or multi-user deployment.
 
 ---
 
-## Why This Exists
+## Why
 
-Old Spotify playlists accumulate years of additions that no longer reflect current taste. Rather than manually re-listening to hundreds of tracks, Culler uses enrichment data (genre, popularity proxy, listening history) plus a locally-run LLM to flag likely skips for a fast first-pass cleanup — then systematically learns from where its own predictions were wrong.
+Old playlists accumulate years of additions you'd never actually play. Rather than re-listening to 820 tracks manually, I wanted to see if a local LLM could make a reasonable first pass — and whether a feedback loop would actually improve its predictions over time.
 
 ---
 
-## Architecture
+## How It Works
 
 ```mermaid
 flowchart TD
     A[Exportify CSV] --> B[Ingestion & DB Init]
     B --> C[Last.fm Global & Personal Enrichment]
-    C --> D[(SQLite DB: skip_predictor.db)]
-    
+    C --> D[(SQLite: skip_predictor.db)]
+
     subgraph Calibration Loop [Self-Calibration Loop]
         D -->|Unused Ground-Truth Labels| E[Batch Selector]
         D -->|Active Rules| F[Rule-Aware Prompt Builder]
         E --> F
         F --> G[Qwen3 8B Local Inference]
         G --> H[Miss Clustering]
-        H -->|≥2 Misses Pattern| I[LLM Rule Synthesis]
+        H -->|≥2 Misses / ≥20% Miss Rate| I[LLM Rule Synthesis]
         I --> J{Rule Management}
         J -->|Opposite Direction| K[Contradiction Resolution]
         J -->|Word Overlap > 0.5| L[LLM Rule Merge]
@@ -40,86 +38,97 @@ flowchart TD
 ```
 
 ### 1. Data Pipeline
-Due to Spotify's API restrictions on personal apps, the ingestion pipeline runs on [Exportify](https://exportify.app/) CSV exports enriched via the Last.fm API:
-- **Features Extracted**: Genre tags, popularity proxy, artist co-occurrence score, days-since-added, and personal lifetime scrobbles/playcounts.
-- **Dataset**: 820 tracks ingested and verified clean in SQLite (`skip_predictor.db`).
+Spotify's API no longer supports the endpoints this kind of project needs without Developer Mode and Premium. So the ingestion pipeline uses [Exportify](https://exportify.app/) CSV exports and enriches them via the Last.fm API:
+
+- **Features**: genre tags, popularity proxy (Last.fm global listeners), artist co-occurrence score (how often the artist appears across the playlist relative to all tracks), days-since-added, and personal lifetime scrobble count.
+- **Dataset**: 820 tracks, deduplicated and verified clean.
 
 ### 2. Model Selection
-Benchmarked four CPU-runnable models (Phi-4-mini, Qwen3 4B, Qwen3 8B, Mistral 7B Instruct v0.3 — all Q4_K_M quantized) on a fixed 50-track sample.
 
-Choosing the model required a fundamental architectural trade-off between **inference speed and reasoning capability**:
-- **Smaller models** (Phi-4-mini 3.8B, Qwen3 4B) offered fast throughput (~5–15s/track on CPU) but struggled with subtle multi-feature interactions, often collapsing into naive majority-class predictions ("Always Keep").
-- **Qwen3 8B** was chosen because it demonstrated real reasoning depth and delivered the highest **Skip-recall** (47.4% vs. 21.1% / 10.5%). However, this required sacrificing speed, as deep thinking mode runs significantly slower on a consumer CPU.
+Benchmarked four quantized models (Phi-4-mini 3.8B, Qwen3 4B, Qwen3 8B, Mistral 7B Instruct v0.3 — all Q4_K_M) on a fixed 50-track labeled sample.
 
-A naive "always predict Keep" baseline scored highest on raw accuracy alone due to class imbalance, making Skip-recall the true deciding metric. Ultimately, speed was traded away in favor of genuine reasoning integrity.
+The core trade-off: **speed vs. reasoning quality**.
 
-### 3. Self-Calibration Loop
-The core engine of the project. In each round:
-1. **Pulls fresh labeled tracks**: Fetches unused hand-labeled ground-truth tracks (`Keep` / `Skip`).
-2. **Infers with injected rules**: Builds prompts injecting currently-active heuristic rules ranked by correctness rate.
-3. **Clusters misses**: Groups prediction errors by feature pattern (single-feature, quartile-bucketed across the 820-track distribution; requires $\ge 2$ misses or $\ge 20\%$ to qualify).
-4. **Synthesizes rules**: Prompts Qwen3 8B (in thinking mode) to generate actionable curation rules from qualifying miss clusters.
-5. **Evolves ruleset**:
-   - **Contradiction Resolution**: Detects when a new candidate rule shares a trigger pattern with an existing rule but yields an opposite verdict direction (`favor_skip` vs. `favor_keep`). Resolves via newest-evidence-wins (retires older rule with `superseded_by`).
-   - **Deduplication / Merge**: Merges overlapping same-direction rules via LLM if word similarity $> 0.5$.
-   - **Pruning**: Deactivates rules with $\ge 10$ applications and $< 40\%$ accuracy.
-   - **Cap Enforcement**: Maintains a strict cap of 12 active rules.
-6. **Provenance Tracking**: SQLite schema tracks full rule lifecycle (`times_applied`, `times_correct`, `created_by_run_id`, `superseded_by`, `retirement_reason`, `verdict_direction`, `trigger_feature`, `trigger_bucket`), alongside a JSON log in `runs`.
+- Smaller models (Phi-4-mini, Qwen3 4B) ran fast (~5–15s/track) but collapsed into naive majority-class predictions — essentially "always Keep" — regardless of feature values.
+- Qwen3 8B produced real feature-grounded reasoning, but only in thinking mode, which costs ~230–270s/track on this CPU.
 
-### 4. Hardware Environment
-- **Machine**: Dell Latitude 5500 (Intel Core i7-8665U, 4 physical cores / 8 vCPUs, ~15 GB RAM, Intel UHD 620).
-- **Execution**: 100% CPU-only local inference via `llama-cpp-python` pinned to 4 physical cores (`N_THREADS = 4` to eliminate AVX2 hyperthread context-switching stalls), accessed over SSH from a MacBook. Zero external GPU or cloud inference APIs.
+The deciding metric was **Skip-recall**, not accuracy. A baseline of "always predict Keep" scores highest on accuracy due to class imbalance, which would have been a useless model. Qwen3 8B hit 47.4% Skip-recall vs. 21.1% / 10.5% for the smaller alternatives. Speed was traded away in favor of reasoning that actually varies by input.
 
----
+### 3. Calibration Loop
 
-## Key Finding: The `/no_think` Grounding Bug
+Each round:
+1. Pull a batch of unused hand-labeled tracks (`keep` / `skip` from ground truth).
+2. Build a prompt per track, injecting currently-active heuristic rules ranked by correctness rate.
+3. Run Qwen3 8B and collect JSON verdicts.
+4. **Cluster misses** by shared feature patterns (single-feature, quartile-bucketed across the 820-track distribution). Threshold: $\ge 2$ misses in a bucket, or $\ge 20\%$ miss rate on the batch.
+5. For qualifying clusters, call the LLM in thinking mode to synthesize a candidate heuristic rule.
+6. **Update the ruleset**:
+   - If the new rule's trigger pattern conflicts with an existing rule's verdict direction → retire the older rule (newest-evidence-wins).
+   - If word overlap with an existing same-direction rule exceeds 0.5 → merge via LLM.
+   - Rules with $\ge 10$ applications and $< 40\%$ correct rate get pruned.
+   - Hard cap of 12 active rules total.
+7. Write everything to SQLite: `rules`, `runs`, updated `labels.used_in_run_id`.
 
-Early iterations ran Qwen3 8B in low-latency `/no_think` mode (~20–25s/track). At first glance, predictions seemed reasonable. However, a detailed per-track audit against ground truth uncovered that the model was hallucinating its reasoning:
-- **Flat Confidence**: Confidence scores were stuck at a constant ~85 regardless of feature extremity.
-- **Factual Hallucinations**: Reasoning text directly contradicted the input data (e.g. claiming a track with 49 personal scrobbles had "zero playcount").
+**Rule schema** tracks: `times_applied`, `times_correct`, `created_by_run_id`, `superseded_by`, `retirement_reason`, `verdict_direction`, `trigger_feature`, `trigger_bucket`.
 
-### The Fix & The Trade-off
-- **The Fix**: Removing `/no_think` and allowing the full `<think>` reasoning trace restored grounded, feature-accurate reasoning and meaningful confidence variance. `max_tokens` was increased to 8,192 to prevent mid-thought truncation.
-- **The Cost**: Thinking mode takes ~230–270s/track on this CPU (~10x slower). A full 820-track run would require ~41 hours on CPU, so calibration was structured around iterative 15–20 track batches.
+### 4. Hardware
 
-> **Takeaway**: A small local LLM can appear coherent while silently ungrounded. Enforcing reasoning integrity has a measurable compute cost that must be accounted for in system design.
+- **Machine**: Dell Latitude 5500 — Intel Core i7-8665U (4 physical cores, 8 threads), ~15 GB RAM, Intel UHD 620.
+- **Inference**: `llama-cpp-python`, CPU-only. Pinned to 4 physical cores (`N_THREADS = 4`) to avoid AVX2 thread contention from hyperthreading.
+- **Access**: SSH from a MacBook. No GPU. No cloud APIs anywhere in the inference pipeline.
 
 ---
 
-## Experiment: Prompt-Engineering Reasoning Length (Negative Result)
+## The `/no_think` Bug
 
-Thinking-mode traces showed heavy circular reasoning — the model frequently re-derived its conclusions using hedging language (*"wait"*, *"alternatively"*, *"hmm"*). Two prompt variants were evaluated on a fixed 3-track sample, measuring hedge-word frequency as a proxy for rumination:
+Early runs used Qwen3 8B's low-latency `/no_think` mode (~20–25s/track). The output looked plausible. Then I checked it against ground truth on individual tracks.
+
+The model was quietly hallucinating:
+- **Confidence was flat at ~85** regardless of how extreme the features were.
+- **Reasoning directly contradicted the input** — e.g. describing a track with 49 personal scrobbles as having "zero playcount", or flagging a high co-occurrence artist as unknown.
+
+**Fix**: Removing `/no_think` lets the full `<think>...</think>` reasoning trace run before the JSON output. After the fix, confidence varied meaningfully and reasoning was grounded to the actual feature values. `max_tokens` was raised to 4096 and context window to 8192 to prevent mid-trace truncation.
+
+**Cost**: ~230–270s/track. A full 820-track pass would take ~41 hours. So calibration runs in batches of 15–20 tracks, not the full corpus.
+
+> **The lesson here:** a compact LLM can produce output that reads as coherent while being factually detached from the input. You have to check it against ground truth per-sample, not just read a few outputs and assume it's working.
+
+---
+
+## Experiment: Telling the Model Not to Hedge (Negative Result)
+
+Thinking-mode traces showed the model re-deriving the same conclusion multiple times using *"wait"*, *"alternatively"*, *"hmm"* before settling. I tried two variants on a fixed 3-track sample, counting hedge-word occurrences as a proxy for circular reasoning:
 
 | Variant | Hedge-Word Count | Runtime (3 tracks) |
 | :--- | :---: | :---: |
 | **Baseline prompt** | 13 | 13m 24s |
-| **+ 3-step structure, feature priorities, explicit anti-hedging rule** | **28** | 13m 23s |
+| **+ 3-step structure, signal priorities, explicit "do not hedge" rule** | **28** | 13m 23s |
 
-**Finding**: Explicitly instructing the model *not* to use hedging language roughly **doubled** hedge-word occurrences (13 $\rightarrow$ 28) with no change in latency. The negative instruction caused token fixation. 
+Explicitly telling the model not to use hedging language roughly **doubled** occurrences. The instruction apparently causes the model to fixate on the forbidden tokens rather than avoid them.
 
-The anti-hedging line was reverted, while the structured 3-step reasoning format (1: Strongest Keep signal, 2: Strongest Skip signal, 3: Winner & why) and feature-priority weighting were retained.
-
----
-
-## Known Limitations
-
-- **Oscillation over Convergence**: The calibration mechanism executes cleanly end-to-end (clustering $\rightarrow$ synthesis $\rightarrow$ contradiction resolution), but initial rounds exhibit rule oscillation across small batches rather than monotonic accuracy gains.
-- **Parse-Failure Rate**: Early runs experienced ~15–30% parse drops from unhandled markdown fencing and `<think>` trace cutoffs; resolved via greedy regex parsing and raised generation token ceilings (`DEFAULT_MAX_TOKENS = 4096`).
-- **Lifetime vs. Recency Playcounts**: `user_playcount` represents lifetime scrobbles, which cannot distinguish between a dormant past favorite and an active daily track.
-- **Full Dataset Run**: Full 820-track passes were deferred due to the ~41-hour CPU runtime requirement in thinking mode.
+The anti-hedging line was removed. The structured 3-step format (1: strongest Keep signal, 2: strongest Skip signal, 3: which wins and why) was kept, since it hadn't been isolated as the source of the regression.
 
 ---
 
-## Key Engineering Takeaways
+## Current State & Known Issues
 
-1. **100% Local Autonomous Reasoning**: All prediction, clustering, synthesis, merge, and contradiction checks run locally through Qwen3 8B. No cloud LLMs participate in the evaluation or calibration pipeline.
-2. **Schema & Environment Divergence**: In remote development setups (SSH to headless laptop), assistant-generated schema migrations must be verified directly against the live database rather than local mock environments. All Phase 3 migrations in Culler were made strictly idempotent via `PRAGMA table_info` checks at startup.
+- **Convergence not demonstrated yet**: The loop executes cleanly end-to-end — miss clustering, rule synthesis, contradiction detection all work — but across the rounds run so far, rules oscillate rather than monotonically improving accuracy. Small batch sizes make it hard to separate signal from noise.
+- **Early parse-failure rate**: First runs saw ~15–30% parse drops due to unhandled markdown fencing and truncated `<think>` traces. Fixed by switching to greedy regex JSON extraction and raising `DEFAULT_MAX_TOKENS` to 4096.
+- **Playcount is lifetime, not recency**: `user_playcount` is a total scrobble count. It can't tell "still in rotation" from "loved three years ago, never touched since." A recency signal from `user.getRecentTracks` was considered but not built — scrobbling was likely dormant or unreliable over the period these tracks were added, so a derived recency feature would probably be as noisy as the lifetime count.
+- **Full library run deferred**: The ~41-hour CPU estimate for a full 820-track pass makes it impractical on this hardware. Evidence is deliberately built on smaller rounds.
 
 ---
 
-## Tech Stack
+## Lessons
 
-- **Model**: Qwen3 8B Instruct (Q4_K_M GGUF via `llama-cpp-python`)
-- **Storage**: SQLite (`skip_predictor.db`)
-- **Data Ingestion**: Exportify CSV + Last.fm REST API
+1. **All reasoning in the pipeline is local**: prediction, miss clustering, rule synthesis, contradiction resolution, and rule merging all run through Qwen3 8B on-device. The coding assistant (Gemini, via IDE) was used only for writing and debugging code — it never touched the playlist data or made any predictions.
+2. **Remote DB state and local assistant state diverge silently**: Hit this more than once. A coding assistant reported schema changes as "verified" against its own in-memory environment, not the real database on the remote machine. All migrations in this project use `PRAGMA table_info` checks and are designed to be idempotent.
+
+---
+
+## Stack
+
+- **Model**: Qwen3 8B Instruct Q4_K_M (GGUF, via `llama-cpp-python`)
+- **DB**: SQLite (`skip_predictor.db`, gitignored)
+- **Data**: Exportify CSV + Last.fm API (disk-cached)
 - **Language**: Python 3.10+
