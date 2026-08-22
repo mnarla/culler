@@ -2,7 +2,7 @@
 
 A local, CPU-only experiment that flags tracks to skip in bloated Spotify playlists, then uses prediction errors to auto-tune its own heuristic rules.
 
-Built on an old Dell Latitude 5500 to benchmark local 8B reasoning, test self-correction loops, and inspect failure modes without cloud APIs. Not intended for daily use or multi-user deployment. However, cloud APIs would've made this simpler and easier, but I wanted to mess around with local llms.
+Built and tested against an old Dell Latitude 5500 (used as a dedicated local server accessed via SSH) to benchmark local 8B reasoning, test self-correction loops, and inspect failure modes without cloud APIs. Not intended for daily use or multi-user deployment. However, cloud APIs would've made this simpler and easier, but I wanted to mess around with local llms.
 
 ---
 
@@ -72,10 +72,10 @@ Each round:
 **Rule schema** tracks: `times_applied`, `times_correct`, `created_by_run_id`, `superseded_by`, `retirement_reason`, `verdict_direction`, `trigger_feature`, `trigger_bucket`.
 
 ### 4. Hardware
-
-- **Machine**: Dell Latitude 5500 — Intel Core i7-8665U (4 physical cores, 8 threads), ~15 GB RAM, Intel UHD 620.
+ 
+- **Server**: Dell Latitude 5500 — Intel Core i7-8665U (4 physical cores, 8 threads), ~15 GB RAM, Intel UHD 620. Headless local server running the Qwen model.
 - **Inference**: `llama-cpp-python`, CPU-only. Pinned to 4 physical cores (`N_THREADS = 4`) to avoid AVX2 thread contention from hyperthreading.
-- **Access**: SSH from a MacBook. No GPU. No cloud APIs anywhere in the inference pipeline.
+- **Access**: Controlled and driven entirely via SSH from a MacBook. No GPU. No cloud APIs anywhere in the inference pipeline.
 
 ---
 
