@@ -26,12 +26,11 @@ ACTIVE_MODEL_PATH: Path = Path("models/Qwen3-8B-Q4_K_M.gguf")
 # Pin to physical cores — hyperthreads hurt throughput on AVX2 matrix ops
 N_THREADS: int = 8
 
-# Context window: enough for a structured 5-feature prompt + reasoning + JSON
-# Anything ≥2048 is fine; 4096 gives comfortable headroom for future changes
-N_CTX: int = 4096
+# Context window: 8192 tokens provides full headroom for prompt + thinking trace + JSON
+N_CTX: int = 8192
 
-# Max tokens for a single prediction response
-DEFAULT_MAX_TOKENS: int = 200
+# Max generation tokens per prediction (allows Qwen3 full <think> trace + JSON)
+DEFAULT_MAX_TOKENS: int = 4096
 
 # Temperature — 0.0 for deterministic verdicts (skip/keep)
 TEMPERATURE: float = 0.0

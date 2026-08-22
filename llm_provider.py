@@ -34,8 +34,8 @@ except ImportError:
     # Fallback defaults if config.py is missing (should not happen in practice)
     _MODEL_PATH = Path("models/Qwen3-8B-Q4_K_M.gguf")
     _N_THREADS = 8
-    _N_CTX = 4096
-    _DEFAULT_MAX_TOKENS = 200
+    _N_CTX = 8192
+    _DEFAULT_MAX_TOKENS = 4096
     _TEMPERATURE = 0.0
 
 # ── Module-level singleton ────────────────────────────────────────────────────
