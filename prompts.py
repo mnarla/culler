@@ -158,6 +158,9 @@ def build_prediction_prompt(track: Dict[str, Any], conn: sqlite3.Connection) -> 
         lines.append("")
 
     # ── Reasoning constraints ─────────────────────────────────────────────────
+    # Note: Explicit negative instruction against hedging words ("wait", "hmm", etc.)
+    # was tested and reverted — it roughly doubled hedging occurrences (13 baseline -> 28)
+    # in <think> output due to token fixation.
     lines.append("Reasoning process — follow these steps in order, do not revisit earlier steps:")
     lines.append("  1. Name the single strongest signal that argues for Keep.")
     lines.append("  2. Name the single strongest signal that argues for Skip.")
@@ -166,11 +169,6 @@ def build_prediction_prompt(track: Dict[str, Any], conn: sqlite3.Connection) -> 
     lines.append(
         "Signal priority: treat Your Play Count and Days Since Added as the primary signals. "
         "Use Artist Co-occurrence Score and Genre only as tiebreakers if the first two conflict."
-    )
-    lines.append("")
-    lines.append(
-        "Do not use hedging language (\"wait\", \"alternatively\", \"hmm\", \"on the other hand\"). "
-        "State each point once and move on."
     )
     lines.append("")
 
