@@ -19,20 +19,20 @@ JSON Output Contract:
     parsing exactly this shape via json.loads():
 
     {
-        "verdict": "Keep" | "Skip",
+        "decision": "KEEP" | "SKIP",
         "confidence": <integer 0-100>,
         "reasoning": "<1-2 sentence explanation referencing specific features>"
     }
 
     Fields:
-        verdict    : "Keep" or "Skip" — mandatory.
+        decision   : "KEEP" or "SKIP" (or "Keep"/"Skip") — mandatory.
         confidence : Integer 0–100 expressing model certainty — mandatory.
         reasoning  : Sentence(s) naming the specific features that drove the
-                     verdict (e.g. Keep: "high co-occurrence (0.065) and positive
-                     plays confirm anchor artist despite age"; Skip: "zero plays,
-                     low co-occurrence (0.008), and added 1900 days ago indicate
-                     forgotten filler"). This field is mined by
-                     consolidate_rules.py for error pattern discovery.
+                     verdict (e.g. KEEP: "high artist co-occurrence (0.088) and
+                     14 plays confirm anchor classic despite age"; SKIP: "low
+                     artist co-occurrence (0.006) and 0 plays indicate forgotten
+                     filler"). This field is mined by consolidate_rules.py for
+                     error pattern discovery.
 
     calibrate.py is responsible for parsing and validating this JSON.
     This module builds only the input prompt.
@@ -160,14 +160,14 @@ def build_prediction_prompt(track: Dict[str, Any], conn: sqlite3.Connection) -> 
 
     # ── Decision Framework & Reasoning Constraints ────────────────────────────
     lines.append("Decision Framework:")
-    lines.append("  - Taste Preservation Prior: Assume saved tracks represent genuine taste unless clear decay is demonstrated.")
-    lines.append("  - Strong KEEP Signals: High Artist Co-occurrence Score (>= 0.05 / 5%), positive personal play count (> 0), or core anchor artists. High artist co-occurrence strongly protects older tracks from automatic skip verdicts.")
-    lines.append("  - Strong SKIP Signals: Clear evidence of decay — 0 play count AND high Days Since Added (> 1000) AND low Artist Co-occurrence Score (< 0.02 / 2%), representing forgotten one-offs.")
-    lines.append("  - Signal Hierarchy: Artist loyalty/co-occurrence and positive plays outweigh age alone. A track added years ago should NOT be skipped if it belongs to a recurring core artist.")
+    lines.append("  - Context on Track Age: This is a mature, curated playlist where tracks are typically >1500 days old. Longevity alone is NOT decay. An older track by a frequently recurring artist is an \"anchor classic\" to be preserved.")
+    lines.append("  - Prioritize Artist Co-occurrence: High Artist Co-occurrence Score (> 0.05 / 5.0%) is a primary signal favoring KEEP. It reflects deep artist affinity across the playlist and strongly protects older tracks from skip verdicts.")
+    lines.append("  - Strong KEEP Criteria: High co-occurrence (> 0.05 / 5.0%), positive personal play count (> 0), or recurring core artists.")
+    lines.append("  - Strong SKIP Criteria: Stale filler defined by the conjunction of 0 play count AND high Days Since Added (> 1000) AND low Artist Co-occurrence Score (< 0.01 / 1.0%), representing forgotten one-offs.")
     lines.append("")
     lines.append("Reasoning Process (follow these 3 steps in order):")
-    lines.append("  1. Identify KEEP signals: Assess artist loyalty, co-occurrence score, and personal play count.")
-    lines.append("  2. Identify SKIP signals: Check for isolated one-off artists, zero plays, and age decay.")
+    lines.append("  1. Identify KEEP signals: Assess artist loyalty/affinity (co-occurrence score) and personal play count.")
+    lines.append("  2. Identify SKIP signals: Check whether the track is an isolated one-off with 0 plays and low co-occurrence.")
     lines.append("  3. Objective Synthesis: Weigh both sides against the framework to determine whether Keep or Skip wins and why.")
     lines.append("")
 
@@ -177,12 +177,12 @@ def build_prediction_prompt(track: Dict[str, Any], conn: sqlite3.Connection) -> 
         "Use exactly this structure:"
     )
     lines.append("")
-    lines.append('{"verdict": "Keep" | "Skip", "confidence": <integer 0-100>, "reasoning": "<1-2 sentences>"}')
+    lines.append('{"decision": "KEEP" | "SKIP", "confidence": <integer 0-100>, "reasoning": "<1-2 sentences>"}')
     lines.append("")
     lines.append(
-        'In "reasoning", name the specific feature(s) that drove your verdict '
-        '(e.g. Keep: "high artist co-occurrence (0.065) and positive playcount confirm core favorite despite age"; '
-        'Skip: "zero plays, low co-occurrence (0.008), and added 1900 days ago indicate forgotten one-off"). '
+        'In "reasoning", name the specific feature(s) that drove your decision '
+        '(e.g. KEEP: "high artist co-occurrence (0.088) and 14 plays confirm anchor classic despite being added 1800 days ago"; '
+        'SKIP: "low artist co-occurrence (0.006) and 0 plays indicate forgotten one-off filler"). '
         "Generic or vague reasoning is not acceptable."
     )
 
