@@ -57,7 +57,7 @@ The deciding metric was **Skip-recall**, not accuracy. A baseline of "always pre
 ### 3. Calibration Loop
 
 Each round:
-1. Pull a batch of unused hand-labeled tracks (`keep` / `skip` from ground truth).
+1. Pull a batch of unused hand-labeled tracks (user picks `keep` / `skip` from the songs shown).
 2. Build a prompt per track, injecting currently-active heuristic rules ranked by correctness rate.
 3. Run Qwen3 8B and collect JSON verdicts.
 4. **Cluster misses** by shared feature patterns (single-feature, quartile-bucketed across the 820-track distribution). Threshold: $\ge 2$ misses in a bucket, or $\ge 20\%$ miss rate on the batch.
@@ -73,7 +73,7 @@ Each round:
 
 ### 4. Hardware
  
-- **Server**: Dell Latitude 5500 — Intel Core i7-8665U (4 physical cores, 8 threads), ~15 GB RAM, Intel UHD 620. Headless local server running the Qwen model.
+- **Server**: Dell Latitude 5500 — Intel Core i7-8665U (4 physical cores, 8 threads), ~15 GB RAM, Intel UHD 620. Local server running the Qwen model.
 - **Inference**: `llama-cpp-python`, CPU-only. Pinned to 4 physical cores (`N_THREADS = 4`) to avoid AVX2 thread contention from hyperthreading.
 - **Access**: Controlled and driven entirely via SSH from a MacBook. No GPU. No cloud APIs anywhere in the inference pipeline.
 
