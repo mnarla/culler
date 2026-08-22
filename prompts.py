@@ -28,10 +28,11 @@ JSON Output Contract:
         verdict    : "Keep" or "Skip" — mandatory.
         confidence : Integer 0–100 expressing model certainty — mandatory.
         reasoning  : Sentence(s) naming the specific features that drove the
-                     verdict (e.g. "zero user playcount combined with a high
-                     co-occurrence score suggests stale filler"). This field
-                     is mined by consolidate_rules.py for error pattern
-                     discovery, so generic filler is actively harmful.
+                     verdict (e.g. Keep: "high co-occurrence (0.065) and positive
+                     plays confirm anchor artist despite age"; Skip: "zero plays,
+                     low co-occurrence (0.008), and added 1900 days ago indicate
+                     forgotten filler"). This field is mined by
+                     consolidate_rules.py for error pattern discovery.
 
     calibrate.py is responsible for parsing and validating this JSON.
     This module builds only the input prompt.
@@ -157,19 +158,17 @@ def build_prediction_prompt(track: Dict[str, Any], conn: sqlite3.Connection) -> 
             lines.append(f"  {i}. {rule_text.strip()}")
         lines.append("")
 
-    # ── Reasoning constraints ─────────────────────────────────────────────────
-    # Note: Explicit negative instruction against hedging words ("wait", "hmm", etc.)
-    # was tested and reverted — it roughly doubled hedging occurrences (13 baseline -> 28)
-    # in <think> output due to token fixation.
-    lines.append("Reasoning process — follow these steps in order, do not revisit earlier steps:")
-    lines.append("  1. Name the single strongest signal that argues for Keep.")
-    lines.append("  2. Name the single strongest signal that argues for Skip.")
-    lines.append("  3. In one sentence, state which signal wins and why.")
+    # ── Decision Framework & Reasoning Constraints ────────────────────────────
+    lines.append("Decision Framework:")
+    lines.append("  - Taste Preservation Prior: Assume saved tracks represent genuine taste unless clear decay is demonstrated.")
+    lines.append("  - Strong KEEP Signals: High Artist Co-occurrence Score (>= 0.05 / 5%), positive personal play count (> 0), or core anchor artists. High artist co-occurrence strongly protects older tracks from automatic skip verdicts.")
+    lines.append("  - Strong SKIP Signals: Clear evidence of decay — 0 play count AND high Days Since Added (> 1000) AND low Artist Co-occurrence Score (< 0.02 / 2%), representing forgotten one-offs.")
+    lines.append("  - Signal Hierarchy: Artist loyalty/co-occurrence and positive plays outweigh age alone. A track added years ago should NOT be skipped if it belongs to a recurring core artist.")
     lines.append("")
-    lines.append(
-        "Signal priority: treat Your Play Count and Days Since Added as the primary signals. "
-        "Use Artist Co-occurrence Score and Genre only as tiebreakers if the first two conflict."
-    )
+    lines.append("Reasoning Process (follow these 3 steps in order):")
+    lines.append("  1. Identify KEEP signals: Assess artist loyalty, co-occurrence score, and personal play count.")
+    lines.append("  2. Identify SKIP signals: Check for isolated one-off artists, zero plays, and age decay.")
+    lines.append("  3. Objective Synthesis: Weigh both sides against the framework to determine whether Keep or Skip wins and why.")
     lines.append("")
 
     # ── Output instruction ────────────────────────────────────────────────────
@@ -182,7 +181,8 @@ def build_prediction_prompt(track: Dict[str, Any], conn: sqlite3.Connection) -> 
     lines.append("")
     lines.append(
         'In "reasoning", name the specific feature(s) that drove your verdict '
-        "(e.g. \"zero user playcount and high co-occurrence score suggest stale filler\"). "
+        '(e.g. Keep: "high artist co-occurrence (0.065) and positive playcount confirm core favorite despite age"; '
+        'Skip: "zero plays, low co-occurrence (0.008), and added 1900 days ago indicate forgotten one-off"). '
         "Generic or vague reasoning is not acceptable."
     )
 
