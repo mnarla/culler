@@ -57,7 +57,7 @@ The deciding metric was **Skip-recall**, not accuracy. A baseline of "always pre
 ### 3. Calibration Loop
 
 Each round:
-1. Pull a batch of unused hand-labeled tracks (`keep` / `skip` from ground truth).
+1. Pull a batch of unused hand-labeled tracks (user picks `keep` / `skip` from the songs shown).
 2. Build a prompt per track, injecting currently-active heuristic rules ranked by correctness rate.
 3. Run Qwen3 8B and collect JSON verdicts.
 4. **Cluster misses** by shared feature patterns (single-feature, quartile-bucketed across the 820-track distribution). Threshold: $\ge 2$ misses in a bucket, or $\ge 20\%$ miss rate on the batch.
