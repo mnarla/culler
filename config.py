@@ -23,8 +23,8 @@ ACTIVE_MODEL_PATH: Path = Path("models/Qwen3-8B-Q4_K_M.gguf")
 # Inference settings
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Pin to physical cores — hyperthreads hurt throughput on AVX2 matrix ops
-N_THREADS: int = 8
+# Pin to physical cores (4 cores on i7-8665U) — hyperthreads hurt throughput on AVX2 matrix ops
+N_THREADS: int = 4
 
 # Context window: 8192 tokens provides full headroom for prompt + thinking trace + JSON
 N_CTX: int = 8192
