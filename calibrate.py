@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -133,36 +134,53 @@ def _mark_labels_used(
 # ── JSON response parsing ─────────────────────────────────────────────────────
 
 def _parse_model_response(raw_text: str) -> Optional[Dict[str, Any]]:
-    """Parse verdict/confidence/reasoning from model JSON output.
+    """Parse decision/verdict, confidence, and reasoning from model JSON output.
 
-    Returns None if the response cannot be parsed, rather than crashing.
-    Strips markdown code fences and finds the first { ... } block.
+    Resilient to thinking blocks (<think>...</think>), markdown fences, and trailing text.
+    Returns None if parsing fails gracefully so the caller can record it without crashing.
     """
-    text = raw_text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start == -1 or end == 0:
-        return None
-    try:
-        parsed = json.loads(text[start:end])
-    except json.JSONDecodeError:
+    if not raw_text or not isinstance(raw_text, str):
         return None
 
-    verdict = parsed.get("verdict", "")
-    if verdict not in ("Keep", "Skip"):
-        # Handle lowercase variants
-        verdict = verdict.capitalize()
-        if verdict not in ("Keep", "Skip"):
+    try:
+        # 1. Strip <think>...</think> tags if present
+        cleaned_text = re.sub(r"<think>[\s\S]*?</think>", "", raw_text).strip()
+
+        # 2. Extract the outermost JSON payload using regex
+        match = re.search(r"\{[\s\S]*\}", cleaned_text)
+        if not match:
             return None
 
-    return {
-        "verdict": verdict,
-        "confidence": int(parsed.get("confidence", 50)),
-        "reasoning": str(parsed.get("reasoning", "")),
-    }
+        json_str = match.group(0)
+
+        # 3. Parse JSON substring
+        parsed = json.loads(json_str)
+        if not isinstance(parsed, dict):
+            return None
+
+        # 4. Normalize decision ('KEEP' | 'SKIP') and verdict ('Keep' | 'Skip')
+        raw_decision = parsed.get("decision") or parsed.get("verdict") or ""
+        decision_upper = str(raw_decision).strip().upper()
+        if decision_upper not in ("KEEP", "SKIP"):
+            return None
+
+        # 5. Parse confidence (int, default to 80 if missing/invalid)
+        try:
+            confidence = int(parsed.get("confidence", 80))
+        except (ValueError, TypeError):
+            confidence = 80
+
+        # 6. Parse reasoning
+        reasoning = str(parsed.get("reasoning", "")).strip()
+
+        return {
+            "decision": decision_upper,
+            "verdict": decision_upper.capitalize(),
+            "confidence": confidence,
+            "reasoning": reasoning,
+        }
+    except Exception:
+        return None
 
 
 # ── Prediction step ───────────────────────────────────────────────────────────
